@@ -1,5 +1,3 @@
-//
-
 package main
 
 import (
@@ -62,6 +60,7 @@ func safeString(s string) string {
         ">",    "",
         "|",    "",
     )
+
     return r.Replace(s)
 }
 
