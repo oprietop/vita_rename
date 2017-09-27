@@ -4,6 +4,7 @@ import (
     "fmt"
     "os"
     "io"
+    "sync"
     "strings"
     "bytes"
     "encoding/binary"
@@ -116,68 +117,87 @@ func parseSfo(sfob []byte) map[string]string {
     return m
 }
 
+// process a zip file
+func task(file string) {
+    // open the file
+    r, err := zip.OpenReader(file)
+    check(err)
+    if len(os.Args[1:]) > 0 {
+        fmt.Printf("File: '%s'\n", file)
+    }
+    // init vars
+    newName, appVer, ver := "", "0.00", "0.00"
+    // cycle through zip ms
+    for _, m := range r.File {
+        // do stuff if we go a param.sfo file
+        if strings.HasSuffix(m.Name, "param.sfo") {
+            if len(os.Args[1:]) > 0 {
+                fmt.Printf("SFO: '%s' with %d bytes", m.Name, m.UncompressedSize)
+            }
+            // open the file
+            rc, err := m.Open()
+            check(err)
+            // Will only take the first MB of the file
+            sfob := make([]byte, 10000000)
+            s, err := rc.Read(sfob)
+            check(err)
+            // close the handle
+            rc.Close()
+            if len(os.Args[1:]) > 0 {
+                fmt.Printf(", got %d bytes.\n", s)
+            }
+            // process the file contents
+            m := parseSfo(sfob)
+            // valid results are the ones with an APP_VER key
+            if _, ok := m["APP_VER"]; ok  {
+                // update variables, we want to know the higher version
+                if m["APP_VER"] > appVer {
+                   appVer = m["APP_VER"]
+                }
+                if m["VERSION"] > ver {
+                   ver = m["VERSION"]
+                }
+                // generate a newName candidate
+                newName = fmt.Sprintf("%s (%s-%s) [%s] (%s).zip", m["TITLE"], appVer, ver, m["TITLE_ID"], m["REGION"])
+            }
+        }
+    }
+    // we're done with this file, close the reader
+    r.Close()
+    // Rename the zip file if we got a newName candidate
+    if len(newName) > 0 {
+        fmt.Printf("Moving '\033[36m%s\033[39m' to '\033[33m%s\033[39m': ", file, newName)
+        // Check if our target file does not exists
+        if _, err := os.Stat(newName); os.IsNotExist(err) {
+            // rename
+            err := os.Rename(file, newName)
+            check(err)
+            fmt.Printf("\033[32mOK!\033[39m\n")
+        } else {
+            fmt.Printf("\033[31mFile Exists!\033[39m\n")
+        }
+    }
+}
+
 func main() {
+    // create a WaitGroup
+    var wg sync.WaitGroup
     // get all the zip files in the path
     files, _ := filepath.Glob("*.zip")
     // iterate the files
     for _, file := range files {
-        // open the file
-        r, err := zip.OpenReader(file)
-        check(err)
-        if len(os.Args[1:]) > 0 {
-            fmt.Printf("File: '%s'\n", file)
-        }
-        // init vars
-        newName, appVer, ver := "", "0.00", "0.00"
-        // cycle through zip ms
-        for _, m := range r.File {
-            // do stuff if we go a param.sfo file
-            if strings.HasSuffix(m.Name, "param.sfo") {
-                if len(os.Args[1:]) > 0 {
-                    fmt.Printf("SFO: '%s' with %d bytes", m.Name, m.UncompressedSize)
-                }
-                // open the file
-                rc, err := m.Open()
-                check(err)
-                // Will only take the first MB of the file
-                sfob := make([]byte, 10000000)
-                s, err := rc.Read(sfob)
-                check(err)
-                // close the handle
-                rc.Close()
-                if len(os.Args[1:]) > 0 {
-                    fmt.Printf(", got %d bytes.\n", s)
-                }
-                // process the file contents
-                m := parseSfo(sfob)
-                // valid results are the ones with an APP_VER key
-                if _, ok := m["APP_VER"]; ok  {
-                    // update variables, we want to know the higher version
-                    if m["APP_VER"] > appVer {
-                       appVer = m["APP_VER"]
-                    }
-                    if m["VERSION"] > ver {
-                       ver = m["VERSION"]
-                    }
-                    // generate a newName candidate
-                    newName = fmt.Sprintf("%s (%s-%s) [%s] (%s).zip", m["TITLE"], appVer, ver, m["TITLE_ID"], m["REGION"])
-                }
-            }
-        }
-        // we're done with this file, close the reader
-        r.Close()
-        // Rename the zip file if we got a newName candidate
-        if len(newName) > 0 {
-            fmt.Printf("Moving '\033[36m%s\033[39m' to '\033[33m%s\033[39m': ", file, newName)
-            // Check if our target file does not exists
-            if _, err := os.Stat(newName); os.IsNotExist(err) {
-                // rename
-                err := os.Rename(file, newName)
-                check(err)
-                fmt.Printf("\033[32mOK!\033[39m\n")
-            } else {
-                fmt.Printf("\033[31mFile Exists!\033[39m\n")
-            }
-        }
+        // IMPORTANT: variables declared within the body of a loop are not shared between iterations
+        f := file
+        // go routine launching an anonymous function to wrap the stuff we want to do
+        go func() {
+            // Increment wg
+            wg.Add(1)
+            // decrement wg when the function exists
+            defer wg.Done()
+            // The actual function we want to run
+            task(f)
+        }()
     }
+    // wait for all the go routines to finish (wg becoming 0)
+    wg.Wait()
 }
