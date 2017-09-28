@@ -1,15 +1,15 @@
 package main
 
 import (
-    "fmt"
-    "os"
-    "io"
-    "sync"
-    "strings"
+    "archive/zip"
     "bytes"
     "encoding/binary"
+    "fmt"
+    "io"
+    "os"
     "path/filepath"
-    "archive/zip"
+    "strings"
+    "sync"
 )
 
 // http://www.vitadevwiki.com/index.php?title=System_File_Object_(SFO)_(PSF)#Header_SFO
@@ -28,6 +28,12 @@ type Index struct {
     ParamLength     int32 // 0x04
     ParamMaxLength  int32 // 0x04
     DataTableOffset int32 // 0x04
+}
+
+// struct to store the info we will use to name the file
+type NameData struct {
+    title, appVer, version, titleId, region string
+    ac                                      int
 }
 
 // region code correlation from http://www.edepot.com/playstation.html and others
@@ -49,17 +55,17 @@ func check(e error) {
 func safeString(s string) string {
     r := strings.NewReplacer(
         "\000", "",
-        "\r",   "",
-        "\n",   "",
-        "\\",   "",
-        "\"",   "",
-        "/",    "",
-        ":",    "",
-        "*",    "",
-        "?",    "",
-        "<",    "",
-        ">",    "",
-        "|",    "",
+        "\r", "",
+        "\n", "",
+        "\\", "",
+        "\"", "",
+        "/", "",
+        ":", "",
+        "*", "",
+        "?", "",
+        "<", "",
+        ">", "",
+        "|", "",
     )
 
     return r.Replace(s)
@@ -69,33 +75,33 @@ func safeString(s string) string {
 func parseSfo(sfob []byte) map[string]string {
     // map to store the items with a default region
     m := map[string]string{"REGION": "UNK"}
-    sfoHeader := Header{}
+    h := Header{}
     // need a buffer to seek via binary.Read
     buffer := bytes.NewBuffer(sfob)
     // match our SFO header
-    err := binary.Read(buffer, binary.LittleEndian, &sfoHeader)
+    err := binary.Read(buffer, binary.LittleEndian, &h)
     check(err)
     if len(os.Args[1:]) > 0 {
-        fmt.Printf("HEADER: %+v\n", sfoHeader)
+        fmt.Printf("HEADER: %+v\n", h)
     }
     // Finish if we don't have valid SFO magic
-    if sfoHeader.Magic != 1179865088 {
-       return m
+    if h.Magic != 1179865088 {
+        return m
     }
     // Get a single element slice with the keys
-    slice := sfob[sfoHeader.KeyOffset:sfoHeader.DataOffset]
+    slice := sfob[h.KeyOffset:h.DataOffset]
     // Trim nulls before splitting
     slice = bytes.Trim(slice, "\x00")
     // Split the slice again, this time to get all the element
     keys := bytes.Split(slice, []byte("\x00"))
     // iterate over the keys slice
-    for i, k := range keys {
-        entryIndex := Index{}
+    for in, k := range keys {
+        i := Index{}
         // seek the buffer for the Index table
-        err = binary.Read(buffer, binary.LittleEndian, &entryIndex)
+        err = binary.Read(buffer, binary.LittleEndian, &i)
         check(err)
-        start := sfoHeader.DataOffset + entryIndex.DataTableOffset
-        end := start + entryIndex.ParamLength
+        start := h.DataOffset + i.DataTableOffset
+        end := start + i.ParamLength
         // ge a slice with the value
         data_slice := sfob[start:end]
         // stringify and sanitize the key/value and store it on a map
@@ -103,10 +109,10 @@ func parseSfo(sfob []byte) map[string]string {
         v := fmt.Sprintf("%s", data_slice)
         m[k] = safeString(v)
         if len(os.Args[1:]) > 0 {
-            fmt.Printf("[%d] (%d-%d) '%s' -> '%s'\n", i, start, end, k, m[k])
+            fmt.Printf("[%d] (%d-%d) '%s' -> '%s'\n", in, start, end, k, m[k])
         }
         // generate a custom REGION key with TITLE_ID
-        if tid, ok :=  m["TITLE_ID"]; ok {
+        if tid, ok := m["TITLE_ID"]; ok {
             regCode := tid[0:4]
             if reg, ok := regions[regCode]; ok {
                 m["REGION"] = reg
@@ -126,7 +132,7 @@ func task(file string) {
         fmt.Printf("File: '%s'\n", file)
     }
     // init vars
-    newName, appVer, ver := "", "0.00", "0.00"
+    data := NameData{}
     // cycle through zip ms
     for _, m := range r.File {
         // do stuff if we go a param.sfo file
@@ -148,33 +154,37 @@ func task(file string) {
             }
             // process the file contents
             m := parseSfo(sfob)
-            // valid results are the ones with an APP_VER key
-            if _, ok := m["APP_VER"]; ok  {
+            if m["CATEGORY"] == "ac" {
+                data.ac++
+            }
+            // valid SFOs to take into account for naming are the ones with an APP_VER key
+            if _, ok := m["APP_VER"]; ok {
                 // update variables, we want to know the higher version
-                if m["APP_VER"] > appVer {
-                   appVer = m["APP_VER"]
+                if m["APP_VER"] > data.appVer {
+                    data.appVer = m["APP_VER"]
                 }
-                if m["VERSION"] > ver {
-                   ver = m["VERSION"]
+                if m["VERSION"] > data.version {
+                    data.version = m["VERSION"]
                 }
-                // generate a newName candidate
-                newName = fmt.Sprintf("%s (%s-%s) [%s] (%s).zip", m["TITLE"], appVer, ver, m["TITLE_ID"], m["REGION"])
+                // keep the info we want:w
+                data.title, data.titleId, data.region = m["TITLE"], m["TITLE_ID"], m["REGION"]
             }
         }
     }
     // we're done with this file, close the reader
     r.Close()
-    // Rename the zip file if we got a newName candidate
-    if len(newName) > 0 {
-        fmt.Printf("Moving '\033[36m%s\033[39m' to '\033[33m%s\033[39m': ", file, newName)
+    // Rename the zip file if we got new info
+    if data.title != "" {
+        // generate a newName candidate
+        newName := fmt.Sprintf("%s (%s-%s-%d) [%s] (%s).zip", data.title, data.appVer, data.version, data.ac, data.titleId, data.region)
         // Check if our target file does not exists
         if _, err := os.Stat(newName); os.IsNotExist(err) {
             // rename
             err := os.Rename(file, newName)
             check(err)
-            fmt.Printf("\033[32mOK!\033[39m\n")
+            fmt.Printf("Moving '\033[36m%s\033[39m' to '\033[33m%s\033[39m': \033[32mOK!\033[39m\n", file, newName)
         } else {
-            fmt.Printf("\033[31mFile Exists!\033[39m\n")
+            fmt.Printf("Moving '\033[36m%s\033[39m' to '\033[33m%s\033[39m': \033[31mFile Exists!\033[39m\n", file, newName)
         }
     }
 }

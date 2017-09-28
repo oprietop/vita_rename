@@ -3,7 +3,7 @@ Rename zip files containing PSVita dumps.
 
 **Format:**
 ```
-TITLE (APP_VER-VERSION) [TITLE_ID] (REGION).zip
+TITLE (APP_VER-VERSION-DLCS) [TITLE_ID] (REGION).zip
 ```
 
 **Notes:**  
