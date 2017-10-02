@@ -198,10 +198,10 @@ func main() {
     for _, file := range files {
         // IMPORTANT: variables declared within the body of a loop are not shared between iterations
         f := file
+        // Increment wg
+        wg.Add(1)
         // go routine launching an anonymous function to wrap the stuff we want to do
         go func() {
-            // Increment wg
-            wg.Add(1)
             // decrement wg when the function exists
             defer wg.Done()
             // The actual function we want to run
